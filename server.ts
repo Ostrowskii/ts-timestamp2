@@ -12,4 +12,7 @@ wss.on('connection', socket => {
   socket.on('message', data => {
     console.log(`Received: ${data}`);
   });
+  socket.on('close', () => {
+    console.log('Client disconnected');
+  });
 });
