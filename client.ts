@@ -1,9 +1,24 @@
 import { WebSocket } from 'ws';
 
-const message = process.argv[2] ?? 'Hello from client';
 const socket = new WebSocket('ws://localhost:8080');
 
 let intervalId: ReturnType<typeof setInterval> | null = null;
+let lastRequestSentAt: number | null = null;
+let bestServerPing = Number.POSITIVE_INFINITY;
+
+const requestServerTime = () => {
+  if (socket.readyState !== WebSocket.OPEN) {
+    return;
+  }
+
+  lastRequestSentAt = Date.now();
+  const payload = {
+    type: 'get time',
+    clientTime: lastRequestSentAt,
+  };
+  socket.send(JSON.stringify(payload));
+  console.log(`Solicitado horário ao servidor às ${lastRequestSentAt}`);
+};
 
 const stopStreaming = () => {
   if (intervalId) {
@@ -16,17 +31,34 @@ const stopStreaming = () => {
 };
 
 socket.on('open', () => {
-  socket.send(message);
-  console.log(`Sent: ${message}`);
-  console.log('Streaming timestamps to server every millisecond');
+  console.log('Conexão estabelecida - iniciando requisições de horário a cada 1 segundo');
+  requestServerTime();
+  intervalId = setInterval(requestServerTime, 1000);
+});
 
-  intervalId = setInterval(() => {
-    if (socket.readyState === WebSocket.OPEN) {
-      const timestamp = Date.now();
-      socket.send(timestamp.toString());
-      console.log(`Timestamp sent: ${timestamp}`);
+socket.on('message', rawData => {
+  const messageText = rawData.toString();
+  let payload: { type?: string; serverTime?: number } = {};
+
+  try {
+    payload = JSON.parse(messageText);
+  } catch {
+    console.log(`Mensagem não JSON recebida: ${messageText}`);
+    return;
+  }
+
+  if (payload.type === 'inform time') {
+    const receiveTime = Date.now();
+    console.log(`Servidor informou horário: ${payload.serverTime}`);
+
+    if (lastRequestSentAt !== null) {
+      const ping = receiveTime - lastRequestSentAt;
+      if (ping < bestServerPing) {
+        bestServerPing = ping;
+        console.log(`server ping menor é de ${bestServerPing} ms`);
+      }
     }
-  }, 1);
+  }
 });
 
 socket.on('close', () => {
