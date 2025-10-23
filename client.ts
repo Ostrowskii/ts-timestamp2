@@ -1,6 +1,6 @@
 import { WebSocket } from 'ws';
 
-const socket = new WebSocket('ws://localhost:8080');
+const socket = new WebSocket('ws://18.228.238.147:8080');
 
 let intervalId: ReturnType<typeof setInterval> | null = null;
 let lastRequestSentAt: number | null = null;
