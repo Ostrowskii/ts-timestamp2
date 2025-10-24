@@ -51,8 +51,13 @@ socket.on('message', rawData => {
     const receiveTime = Date.now();
     console.log(`Servidor informou horário: ${payload.serverTime}`);
 
-    if (lastRequestSentAt !== null) {
+    if (lastRequestSentAt !== null && typeof payload.serverTime === 'number') {
       const ping = receiveTime - lastRequestSentAt;
+      const estimatedServerTime = payload.serverTime - ping / 2;
+      console.log(
+        `Ping atual: ${ping} ms | Horário estimado do servidor no envio: ${estimatedServerTime}`
+      );
+
       if (ping < bestServerPing) {
         bestServerPing = ping;
         console.log(`server ping menor é de ${bestServerPing} ms`);
