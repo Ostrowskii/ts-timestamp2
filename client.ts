@@ -1,10 +1,11 @@
 import { WebSocket } from 'ws';
 
-const socket = new WebSocket('ws://localhost:8080');
+const socket = new WebSocket('ws://18.228.238.147:8080');
 
 let intervalId: ReturnType<typeof setInterval> | null = null;
 let lastRequestSentAt: number | null = null;
 let bestServerPing = Number.POSITIVE_INFINITY;
+let bestEstimatedDelta: number | null = null;
 
 const requestServerTime = () => {
   if (socket.readyState !== WebSocket.OPEN) {
@@ -47,16 +48,38 @@ socket.on('message', rawData => {
     return;
   }
 
-  if (payload.type === 'inform time') {
+ if (payload.type === 'inform time' && typeof payload.serverTime === 'number') {
     const receiveTime = Date.now();
-    console.log(`Servidor informou horário: ${payload.serverTime}`);
 
-    if (lastRequestSentAt !== null) {
-      const ping = receiveTime - lastRequestSentAt;
-      if (ping < bestServerPing) {
-        bestServerPing = ping;
-        console.log(`server ping menor é de ${bestServerPing} ms`);
-      }
+    if (lastRequestSentAt === null) {
+      const deltaDisplay =
+        bestEstimatedDelta !== null ? `${bestEstimatedDelta} ms` : 'aguardando delta';
+      console.log(
+        `Ping: aguardando cálculo | Tempo do servidor: ${payload.serverTime} | Tempo SERVIDOR estimado: ${
+          bestEstimatedDelta !== null ? receiveTime + bestEstimatedDelta : 'aguardando delta'
+        } | Delta estimado: ${deltaDisplay}`
+      );
+      return;
+    }
+
+    const ping = receiveTime - lastRequestSentAt;
+    const localPlusDelta =
+      bestEstimatedDelta !== null ? receiveTime + bestEstimatedDelta : 'aguardando delta';
+    const deltaDisplay = bestEstimatedDelta !== null ? `${bestEstimatedDelta} ms` : 'aguardando delta';
+
+    console.log(
+      `Ping: ${ping} ms | Tempo do servidor: ${payload.serverTime} | Tempo SERVIDOR estimado: ${localPlusDelta} | Delta estimado: ${deltaDisplay}`
+    );
+
+       if (ping < bestServerPing) {
+      bestServerPing = ping;
+      const estimatedMidpointClientTime = lastRequestSentAt + ping / 2;
+      bestEstimatedDelta = payload.serverTime - estimatedMidpointClientTime;
+
+      const estimatedServerNow = receiveTime + bestEstimatedDelta;
+      console.log(
+        `O tempo do servidor é ${estimatedServerNow} (delta estimado: ${bestEstimatedDelta} ms)`
+      );
     }
   }
 });
