@@ -72,6 +72,26 @@ wss.on('connection', socket => {
       return;
     }
 
+    if (payload.type === 'unwatch') {
+      const roomId = typeof payload.room_id === 'string' ? payload.room_id : '';
+      if (!roomId || !isValidRoomId(roomId)) {
+        console.warn('Mensagem unwatch ignorada: room_id inválido ou ausente.');
+        return;
+      }
+
+      const watchersForRoom = watching.get(roomId);
+      if (!watchersForRoom) {
+        return;
+      }
+
+      watchersForRoom.delete(socket);
+      if (watchersForRoom.size === 0) {
+        watching.delete(roomId);
+      }
+
+      return;
+    }
+
     if (payload.type === 'post') {
       const roomId = typeof payload.room_id === 'string' ? payload.room_id : '';
       if (!roomId || !isValidRoomId(roomId)) {
