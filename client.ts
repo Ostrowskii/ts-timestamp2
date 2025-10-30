@@ -16,7 +16,50 @@ type PostBroadcastPayload = {
   };
 };
 
+type RoomEvent = {
+  data: unknown;
+  time: number;
+};
+
+const eventsByRoom = new Map<string, RoomEvent[]>();
+
 const isValidRoomId = (value: string): boolean => /^[0-9a-fA-F]+$/.test(value);
+
+const getOrCreateEventList = (roomId: string): RoomEvent[] => {
+  let events = eventsByRoom.get(roomId);
+  if (!events) {
+    events = [];
+    eventsByRoom.set(roomId, events);
+  }
+  return events;
+};
+
+const insertEventSorted = (roomId: string, event: RoomEvent): RoomEvent[] => {
+  const eventList = getOrCreateEventList(roomId);
+  const serializedData = JSON.stringify(event.data);
+  const alreadyExists = eventList.some(
+    existingEvent =>
+      existingEvent.time === event.time && JSON.stringify(existingEvent.data) === serializedData
+  );
+  if (alreadyExists) {
+    return eventList;
+  }
+
+  if (eventList.length === 0 || event.time >= eventList[eventList.length - 1].time) {
+    eventList.push(event);
+  } else {
+    const insertIndex = eventList.findIndex(existing => event.time <= existing.time);
+    const targetIndex = insertIndex === -1 ? eventList.length : insertIndex;
+    eventList.splice(targetIndex, 0, event);
+  }
+  return eventList;
+};
+
+const printRoomEvents = (roomId: string) => {
+  const events = getOrCreateEventList(roomId);
+  console.log(`Eventos sala ${roomId}:`);
+  console.log(JSON.stringify(events, null, 2));
+};
 
 const args = process.argv.slice(2);
 
@@ -158,36 +201,59 @@ function runTimeSynchronization() {
 }
 
 function runWatchCommand(roomId: string) {
-  const socket = new WebSocket(SERVER_URL);
-  const eventsByRoom = new Map<string, Array<{ data: unknown; time: number }>>();
+  let socket: WebSocket | null = null;
+  let reconnectTimeout: NodeJS.Timeout | null = null;
+  let manualShutdown = false;
+  let awaitingResync = false;
 
-  const stopWatching = () => {
-    if (socket.readyState === WebSocket.OPEN) {
-      socket.close();
+  const clearReconnectAttempt = () => {
+    if (reconnectTimeout) {
+      clearTimeout(reconnectTimeout);
+      reconnectTimeout = null;
     }
   };
 
-  socket.on('open', () => {
-    console.log(`Conexão estabelecida com ${SERVER_URL} - assistindo sala ${roomId}`);
-    socket.send(
-      JSON.stringify({
-        type: 'watch',
-        room_id: roomId,
-      })
-    );
-  });
-
-  socket.on('message', rawData => {
-    const messageText = rawData.toString();
-    let payload: PostBroadcastPayload = {};
-
-    try {
-      payload = JSON.parse(messageText);
-    } catch {
-      console.log(`Mensagem não JSON recebida: ${messageText}`);
+  const scheduleReconnect = () => {
+    if (manualShutdown || reconnectTimeout) {
       return;
     }
+    reconnectTimeout = setTimeout(() => {
+      reconnectTimeout = null;
+      console.log('Tentando reconectar ao servidor...');
+      connect();
+    }, 500);
+  };
 
+  const sendPayload = (payload: unknown) => {
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify(payload));
+    }
+  };
+
+  const requestWatch = () => {
+    awaitingResync = false;
+    sendPayload({
+      type: 'watch',
+      room_id: roomId,
+    });
+  };
+
+  const requestResyncIfNeeded = () => {
+    const events = eventsByRoom.get(roomId);
+    if (events && events.length > 0) {
+      const since = events[events.length - 1].time;
+      awaitingResync = true;
+      sendPayload({
+        type: 'resync',
+        room_id: roomId,
+        since,
+      });
+    } else {
+      requestWatch();
+    }
+  };
+
+  const handlePostMessage = (payload: PostBroadcastPayload) => {
     if (
       payload.type !== 'post' ||
       typeof payload.room_id !== 'string' ||
@@ -199,41 +265,114 @@ function runWatchCommand(roomId: string) {
 
     const room = payload.room_id;
     const { message } = payload;
-
     if (typeof message.time !== 'number' || !('data' in message)) {
       return;
     }
 
-    let eventList = eventsByRoom.get(room);
-    if (!eventList) {
-      eventList = [];
-      eventsByRoom.set(room, eventList);
-    }
-
-    const newEvent = {
+    insertEventSorted(room, {
       data: (message as { data: unknown }).data,
       time: message.time,
-    };
+    });
+    printRoomEvents(room);
+  };
 
-    if (eventList.length === 0 || newEvent.time > eventList[eventList.length - 1].time) {
-      eventList.push(newEvent);
-    } else {
-      const insertIndex = eventList.findIndex(existingEvent => newEvent.time <= existingEvent.time);
-      const targetIndex = insertIndex === -1 ? eventList.length : insertIndex;
-      eventList.splice(targetIndex, 0, newEvent);
+  const handleResyncResponse = (payload: {
+    type?: string;
+    room_id?: string;
+    messages?: unknown;
+  }) => {
+    if (
+      payload.type !== 'resync-response' ||
+      payload.room_id !== roomId ||
+      !Array.isArray(payload.messages)
+    ) {
+      return;
     }
 
-    console.log(`Eventos sala ${room}:`);
-    console.log(JSON.stringify(eventList, null, 2));
-  });
+    for (const entry of payload.messages) {
+      if (
+        entry &&
+        typeof entry === 'object' &&
+        (entry as { type?: string }).type === 'post' &&
+        (entry as { room_id?: string }).room_id === roomId
+      ) {
+        const message = (entry as { message?: { data?: unknown; time?: number } }).message;
+        if (
+          message &&
+          typeof message === 'object' &&
+          'data' in message &&
+          typeof (message as { time?: unknown }).time === 'number'
+        ) {
+          insertEventSorted(roomId, {
+            data: (message as { data: unknown }).data,
+            time: (message as { time: number }).time,
+          });
+        }
+      }
+    }
 
-  socket.on('close', () => {
-    console.log('Connection closed');
-  });
+    printRoomEvents(roomId);
+    awaitingResync = false;
+    requestWatch();
+  };
 
-  socket.on('error', err => {
-    console.error('WebSocket connection error:', err);
-  });
+  const connect = () => {
+    socket = new WebSocket(SERVER_URL);
+
+    socket.on('open', () => {
+      console.log(`Conexão estabelecida com ${SERVER_URL} - assistindo sala ${roomId}`);
+      requestResyncIfNeeded();
+    });
+
+    socket.on('message', rawData => {
+      const messageText = rawData.toString();
+      let payload: unknown;
+      try {
+        payload = JSON.parse(messageText);
+      } catch {
+        console.log(`Mensagem não JSON recebida: ${messageText}`);
+        return;
+      }
+
+      if (payload && typeof payload === 'object') {
+        handlePostMessage(payload as PostBroadcastPayload);
+        handleResyncResponse(payload as { type?: string; room_id?: string; messages?: unknown });
+      }
+    });
+
+    socket.on('close', () => {
+      console.log('Connection closed');
+      if (!manualShutdown) {
+        awaitingResync = false;
+        scheduleReconnect();
+      }
+    });
+
+    socket.on('error', err => {
+      console.error('WebSocket connection error:', err);
+    });
+  };
+
+  const stopWatching = () => {
+    manualShutdown = true;
+    awaitingResync = false;
+    clearReconnectAttempt();
+    if (!socket) {
+      return;
+    }
+
+    if (socket.readyState === WebSocket.OPEN) {
+      sendPayload({
+        type: 'unwatch',
+        room_id: roomId,
+      });
+      socket.close();
+    } else if (socket.readyState === WebSocket.CONNECTING) {
+      socket.close();
+    }
+  };
+
+  connect();
 
   process.on('SIGINT', () => {
     console.log('Received SIGINT - shutting down watch client');

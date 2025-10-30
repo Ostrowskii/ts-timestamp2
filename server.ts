@@ -8,6 +8,7 @@ const DB_DIRECTORY = path.join(process.cwd(), 'db');
 const watching = new Map<string, Set<WebSocket>>();
 
 const isValidRoomId = (value: string): boolean => /^[0-9a-fA-F]+$/.test(value);
+const getRoomFilePath = (roomId: string) => path.join(DB_DIRECTORY, `${roomId}.jsonl`);
 
 const persistEntry = async (roomId: string, entry: unknown) => {
   try {
@@ -17,10 +18,53 @@ const persistEntry = async (roomId: string, entry: unknown) => {
     }
 
     await fs.mkdir(DB_DIRECTORY, { recursive: true });
-    const filePath = path.join(DB_DIRECTORY, `${roomId}.jsonl`);
+    const filePath = getRoomFilePath(roomId);
     await fs.appendFile(filePath, `${serialized}\n`, { encoding: 'utf8' });
   } catch (error) {
     console.error(`Falha ao persistir mensagem da sala ${roomId}`, error);
+  }
+};
+
+const loadMessagesSince = async (roomId: string, since: number) => {
+  const filePath = getRoomFilePath(roomId);
+  try {
+    const data = await fs.readFile(filePath, 'utf8');
+    const messages: Array<unknown> = [];
+    for (const line of data.split('\n')) {
+      if (!line.trim()) {
+        continue;
+      }
+      try {
+        const parsed = JSON.parse(line);
+        let messageTime: number | undefined;
+        if (typeof parsed === 'object' && parsed !== null) {
+          const maybeMessage = (parsed as { message?: unknown }).message;
+          if (maybeMessage && typeof maybeMessage === 'object') {
+            const maybeTime = (maybeMessage as { time?: unknown }).time;
+            if (typeof maybeTime === 'number') {
+              messageTime = maybeTime;
+            }
+          }
+        }
+
+        if (typeof messageTime === 'number' && messageTime >= since) {
+          messages.push(parsed);
+        }
+      } catch (error) {
+        console.warn(`Linha inválida ao processar histórico da sala ${roomId}: ${line}`, error);
+      }
+    }
+    return messages;
+  } catch (error) {
+    if (
+      error &&
+      typeof error === 'object' &&
+      (error as NodeJS.ErrnoException).code === 'ENOENT'
+    ) {
+      return [];
+    }
+    console.error(`Falha ao carregar histórico da sala ${roomId}`, error);
+    return [];
   }
 };
 
@@ -89,6 +133,29 @@ wss.on('connection', socket => {
         watching.delete(roomId);
       }
 
+      return;
+    }
+
+    if (payload.type === 'resync') {
+      const roomId = typeof payload.room_id === 'string' ? payload.room_id : '';
+      const sinceField = (payload as { since?: unknown }).since;
+      const since =
+        typeof sinceField === 'number' && Number.isFinite(sinceField) ? sinceField : null;
+
+      if (!roomId || !isValidRoomId(roomId) || since === null) {
+        console.warn('Mensagem resync ignorada: parâmetros inválidos.');
+        return;
+      }
+
+      void (async () => {
+        const messages = await loadMessagesSince(roomId, since);
+        const response = {
+          type: 'resync-response' as const,
+          room_id: roomId,
+          messages,
+        };
+        socket.send(JSON.stringify(response));
+      })();
       return;
     }
 
