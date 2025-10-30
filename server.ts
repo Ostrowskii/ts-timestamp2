@@ -172,6 +172,8 @@ wss.on('connection', socket => {
         return;
       }
 
+      (originalMessage as Record<string, unknown>).server_received_at = Date.now();
+
       const outboundPayload = {
         type: 'post',
         room_id: roomId,
