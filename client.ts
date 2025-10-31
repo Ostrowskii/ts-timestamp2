@@ -1,4 +1,6 @@
 import { WebSocket } from 'ws';
+import { Timeline } from './timeline.ts';
+
 
 const SERVER_URL = process.env.SERVER_URL ?? 'ws://18.228.238.147:8080';
 
@@ -13,50 +15,26 @@ type PostBroadcastPayload = {
   message?: {
     data?: unknown;
     time?: number;
+    server_received_at?: number;
   };
 };
 
-type RoomEvent = {
-  data: unknown;
-  time: number;
-};
-
-const eventsByRoom = new Map<string, RoomEvent[]>();
+const timelinesByRoom = new Map<string, Timeline>();
 
 const isValidRoomId = (value: string): boolean => /^[0-9a-fA-F]+$/.test(value);
 
-const getOrCreateEventList = (roomId: string): RoomEvent[] => {
-  let events = eventsByRoom.get(roomId);
-  if (!events) {
-    events = [];
-    eventsByRoom.set(roomId, events);
+const getOrCreateTimeline = (roomId: string): Timeline => {
+  let timeline = timelinesByRoom.get(roomId);
+  if (!timeline) {
+    timeline = new Timeline();
+    timelinesByRoom.set(roomId, timeline);
   }
-  return events;
-};
-
-const insertEventSorted = (roomId: string, event: RoomEvent): RoomEvent[] => {
-  const eventList = getOrCreateEventList(roomId);
-  const serializedData = JSON.stringify(event.data);
-  const alreadyExists = eventList.some(
-    existingEvent =>
-      existingEvent.time === event.time && JSON.stringify(existingEvent.data) === serializedData
-  );
-  if (alreadyExists) {
-    return eventList;
-  }
-
-  if (eventList.length === 0 || event.time >= eventList[eventList.length - 1].time) {
-    eventList.push(event);
-  } else {
-    const insertIndex = eventList.findIndex(existing => event.time <= existing.time);
-    const targetIndex = insertIndex === -1 ? eventList.length : insertIndex;
-    eventList.splice(targetIndex, 0, event);
-  }
-  return eventList;
+  return timeline;
 };
 
 const printRoomEvents = (roomId: string) => {
-  const events = getOrCreateEventList(roomId);
+  const timeline = getOrCreateTimeline(roomId);
+  const events = timeline.getSnapshot();
   console.log(`Eventos sala ${roomId}:`);
   console.log(JSON.stringify(events, null, 2));
 };
@@ -239,19 +217,25 @@ function runWatchCommand(roomId: string) {
   };
 
   const requestResyncIfNeeded = () => {
-    const events = eventsByRoom.get(roomId);
-    if (events && events.length > 0) {
-      const since = events[events.length - 1].time;
-      awaitingResync = true;
-      sendPayload({
-        type: 'resync',
-        room_id: roomId,
-        since,
-      });
-    } else {
-      requestWatch();
+    const timeline = timelinesByRoom.get(roomId);
+    let since = 0;
+
+    if (timeline) {
+      const events = timeline.getSnapshot();
+      if (events.length > 0) {
+        const last = events[events.length - 1];
+        since = last.server_received_at;
+      }
     }
+
+    awaitingResync = true;
+    sendPayload({
+      type: 'resync',
+      room_id: roomId,
+      since,
+    });
   };
+
 
   const handlePostMessage = (payload: PostBroadcastPayload) => {
     if (
@@ -265,13 +249,20 @@ function runWatchCommand(roomId: string) {
 
     const room = payload.room_id;
     const { message } = payload;
-    if (typeof message.time !== 'number' || !('data' in message)) {
+    const serverReceivedAt = (message as { server_received_at?: unknown }).server_received_at;
+    if (
+      typeof message.time !== 'number' ||
+      !('data' in message) ||
+      typeof serverReceivedAt !== 'number'
+    ) {
       return;
     }
 
-    insertEventSorted(room, {
+    const timeline = getOrCreateTimeline(room);
+    timeline.add({
       data: (message as { data: unknown }).data,
       time: message.time,
+      server_received_at: serverReceivedAt,
     });
     printRoomEvents(room);
   };
@@ -289,6 +280,7 @@ function runWatchCommand(roomId: string) {
       return;
     }
 
+    const timeline = getOrCreateTimeline(roomId);
     for (const entry of payload.messages) {
       if (
         entry &&
@@ -296,16 +288,20 @@ function runWatchCommand(roomId: string) {
         (entry as { type?: string }).type === 'post' &&
         (entry as { room_id?: string }).room_id === roomId
       ) {
-        const message = (entry as { message?: { data?: unknown; time?: number } }).message;
+        const message = (
+          entry as { message?: { data?: unknown; time?: number; server_received_at?: number } }
+        ).message;
         if (
           message &&
           typeof message === 'object' &&
           'data' in message &&
-          typeof (message as { time?: unknown }).time === 'number'
+          typeof (message as { time?: unknown }).time === 'number' &&
+          typeof (message as { server_received_at?: unknown }).server_received_at === 'number'
         ) {
-          insertEventSorted(roomId, {
+          timeline.add({
             data: (message as { data: unknown }).data,
             time: (message as { time: number }).time,
+            server_received_at: (message as { server_received_at: number }).server_received_at,
           });
         }
       }
