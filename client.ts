@@ -20,6 +20,8 @@ type PostBroadcastPayload = {
 };
 
 const timelinesByRoom = new Map<string, Timeline>();
+export const getTimelineForRoom = (roomId: string) =>
+  timelinesByRoom.get(roomId);
 
 const isValidRoomId = (value: string): boolean => /^[0-9a-fA-F]+$/.test(value);
 
