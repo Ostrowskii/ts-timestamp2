@@ -44,7 +44,10 @@ const printRoomEvents = (roomId: string) => {
   console.log(JSON.stringify(events, null, 2));
 };
 
-if (import.meta.main) {
+const isMain =
+  process.argv[1] && process.argv[1].toLowerCase().includes('client');
+if (isMain) {
+
   const args = process.argv.slice(2);
 
   if (args.length === 0) {
