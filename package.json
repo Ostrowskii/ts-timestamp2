@@ -3,10 +3,10 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "start": "node --import ./register-ts-node.mjs client.ts",
-    "watch": "node --import ./register-ts-node.mjs client.ts watch",
-    "post": "node --import ./register-ts-node.mjs client.ts post",
-    "game": "node --import ./register-ts-node.mjs games/runGame.ts"
+    "start": "tsx client.ts",
+    "watch": "tsx client.ts watch",
+    "post": "tsx client.ts post",
+    "game": "tsx games/runGame.ts"
   },
   "keywords": [],
   "author": "",
@@ -16,7 +16,7 @@
   },
   "devDependencies": {
     "@types/node": "^24.9.1",
-    "ts-node": "^10.9.2",
+    "tsx": "^4.20.6",
     "typescript": "^5.9.3"
   },
   "main": "index.js",
