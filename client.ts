@@ -261,12 +261,14 @@ function runWatchCommand(roomId: string) {
     }
 
     const timeline = getOrCreateTimeline(room);
-    timeline.add({
+    const insertion = timeline.add({
       data: (message as { data: unknown }).data,
       time: message.time,
       server_received_at: serverReceivedAt,
     });
-    printRoomEvents(room);
+    if (insertion.inserted || insertion.replacedExisting) {
+      printRoomEvents(room);
+    }
   };
 
   const handleResyncResponse = (payload: {
@@ -283,6 +285,7 @@ function runWatchCommand(roomId: string) {
     }
 
     const timeline = getOrCreateTimeline(roomId);
+    let timelineChanged = false;
     for (const entry of payload.messages) {
       if (
         entry &&
@@ -300,16 +303,21 @@ function runWatchCommand(roomId: string) {
           typeof (message as { time?: unknown }).time === 'number' &&
           typeof (message as { server_received_at?: unknown }).server_received_at === 'number'
         ) {
-          timeline.add({
+          const insertion = timeline.add({
             data: (message as { data: unknown }).data,
             time: (message as { time: number }).time,
             server_received_at: (message as { server_received_at: number }).server_received_at,
           });
+          if (insertion.inserted || insertion.replacedExisting) {
+            timelineChanged = true;
+          }
         }
       }
     }
 
-    printRoomEvents(roomId);
+    if (timelineChanged) {
+      printRoomEvents(roomId);
+    }
     awaitingResync = false;
     requestWatch();
   };
@@ -399,6 +407,17 @@ function runPostCommand(roomId: string, messageData: string) {
 
     postSent = true;
     const messageTime = Math.round(Date.now() + (deltaEstimate ?? 0));
+    const timeline = getOrCreateTimeline(roomId);
+    const localInsertion = timeline.add({
+      data: messageData,
+      time: messageTime,
+      server_received_at: Number.POSITIVE_INFINITY,
+    });
+    if (localInsertion.inserted) {
+      console.log('Ação aplicada localmente na timeline enquanto aguarda confirmação do servidor.');
+      printRoomEvents(roomId);
+    }
+
     const payload = {
       type: 'post',
       room_id: roomId,

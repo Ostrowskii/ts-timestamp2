@@ -172,7 +172,21 @@ wss.on('connection', socket => {
         return;
       }
 
-      (originalMessage as Record<string, unknown>).server_received_at = Date.now();
+      const declaredTime = (originalMessage as { time?: unknown }).time;
+      if (typeof declaredTime !== 'number' || !Number.isFinite(declaredTime)) {
+        console.warn(`Mensagem post ignorada: timestamp inválido para sala ${roomId}.`);
+        return;
+      }
+
+      const serverNow = Date.now();
+      if (serverNow - declaredTime > 150) {
+        console.warn(
+          `Mensagem post descartada por atraso excessivo (${serverNow - declaredTime} ms) na sala ${roomId}.`
+        );
+        return;
+      }
+
+      (originalMessage as Record<string, unknown>).server_received_at = serverNow;
 
       const outboundPayload = {
         type: 'post',
