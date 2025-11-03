@@ -39,9 +39,6 @@ export class StateMachine<S> {
       lastTickTime: 0,
     };
 
-    this.timeline.addObserver(({ index }) => {
-      this.noteTimelineInsertion(index);
-    });
   }
 
   noteTimelineInsertion(insertedIndex: number): void {

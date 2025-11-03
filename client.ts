@@ -1,5 +1,6 @@
 import { WebSocket } from 'ws';
 import { Timeline } from './timeline.ts';
+import { getRegisteredStateMachine } from './stateMachineRegistry.ts';
 
 
 const SERVER_URL = process.env.SERVER_URL ?? 'ws://18.228.238.147:8080';
@@ -22,6 +23,8 @@ type PostBroadcastPayload = {
 const timelinesByRoom = new Map<string, Timeline>();
 export const getTimelineForRoom = (roomId: string) =>
   timelinesByRoom.get(roomId);
+export const ensureTimelineForRoom = (roomId: string): Timeline =>
+  getOrCreateTimeline(roomId);
 
 const isValidRoomId = (value: string): boolean => /^[0-9a-fA-F]+$/.test(value);
 
@@ -41,43 +44,45 @@ const printRoomEvents = (roomId: string) => {
   console.log(JSON.stringify(events, null, 2));
 };
 
-const args = process.argv.slice(2);
+if (import.meta.main) {
+  const args = process.argv.slice(2);
 
-if (args.length === 0) {
-  runTimeSynchronization();
-} else {
-  const command = args[0];
-  switch (command) {
-    case 'post': {
-      const roomId = args[1];
-      const messageData = args.slice(2).join(' ');
-      if (!roomId || !messageData) {
-        console.error('Uso: npx ts-node client.ts post <room_id> <mensagem>');
-        process.exit(1);
+  if (args.length === 0) {
+    runTimeSynchronization();
+  } else {
+    const command = args[0];
+    switch (command) {
+      case 'post': {
+        const roomId = args[1];
+        const messageData = args.slice(2).join(' ');
+        if (!roomId || !messageData) {
+          console.error('Uso: npx ts-node client.ts post <room_id> <mensagem>');
+          process.exit(1);
+        }
+        if (!isValidRoomId(roomId)) {
+          console.error('room_id deve conter apenas caracteres hexadecimais.');
+          process.exit(1);
+        }
+        runPostCommand(roomId, messageData);
+        break;
       }
-      if (!isValidRoomId(roomId)) {
-        console.error('room_id deve conter apenas caracteres hexadecimais.');
-        process.exit(1);
+      case 'watch': {
+        const roomId = args[1];
+        if (!roomId) {
+          console.error('Uso: npx ts-node client.ts watch <room_id>');
+          process.exit(1);
+        }
+        if (!isValidRoomId(roomId)) {
+          console.error('room_id deve conter apenas caracteres hexadecimais.');
+          process.exit(1);
+        }
+        runWatchCommand(roomId);
+        break;
       }
-      runPostCommand(roomId, messageData);
-      break;
+      default:
+        console.error(`Comando desconhecido: ${command}`);
+        process.exit(1);
     }
-    case 'watch': {
-      const roomId = args[1];
-      if (!roomId) {
-        console.error('Uso: npx ts-node client.ts watch <room_id>');
-        process.exit(1);
-      }
-      if (!isValidRoomId(roomId)) {
-        console.error('room_id deve conter apenas caracteres hexadecimais.');
-        process.exit(1);
-      }
-      runWatchCommand(roomId);
-      break;
-    }
-    default:
-      console.error(`Comando desconhecido: ${command}`);
-      process.exit(1);
   }
 }
 
@@ -180,11 +185,18 @@ function runTimeSynchronization() {
   });
 }
 
-function runWatchCommand(roomId: string) {
+export type WatchOptions = {
+  onTimelineUpdate?: () => void;
+  onShutdown?: () => void;
+  logTimeline?: boolean;
+};
+
+export function runWatchCommand(roomId: string, options: WatchOptions = {}) {
   let socket: WebSocket | null = null;
   let reconnectTimeout: NodeJS.Timeout | null = null;
   let manualShutdown = false;
   let awaitingResync = false;
+  let cleanupExecuted = false;
 
   const clearReconnectAttempt = () => {
     if (reconnectTimeout) {
@@ -267,7 +279,15 @@ function runWatchCommand(roomId: string) {
       server_received_at: serverReceivedAt,
     });
     if (insertion.inserted || insertion.replacedExisting) {
-      printRoomEvents(room);
+      const stateMachine = getRegisteredStateMachine(room);
+      if (stateMachine) {
+        stateMachine.noteTimelineInsertion(insertion.index);
+      }
+      if (options.onTimelineUpdate) {
+        options.onTimelineUpdate();
+      } else if (options.logTimeline !== false) {
+        printRoomEvents(room);
+      }
     }
   };
 
@@ -286,6 +306,7 @@ function runWatchCommand(roomId: string) {
 
     const timeline = getOrCreateTimeline(roomId);
     let timelineChanged = false;
+    let earliestIndex: number | null = null;
     for (const entry of payload.messages) {
       if (
         entry &&
@@ -310,13 +331,25 @@ function runWatchCommand(roomId: string) {
           });
           if (insertion.inserted || insertion.replacedExisting) {
             timelineChanged = true;
+            earliestIndex =
+              earliestIndex === null ? insertion.index : Math.min(earliestIndex, insertion.index);
           }
         }
       }
     }
 
     if (timelineChanged) {
-      printRoomEvents(roomId);
+      if (earliestIndex !== null) {
+        const stateMachine = getRegisteredStateMachine(roomId);
+        if (stateMachine) {
+          stateMachine.noteTimelineInsertion(earliestIndex);
+        }
+      }
+      if (options.onTimelineUpdate) {
+        options.onTimelineUpdate();
+      } else if (options.logTimeline !== false) {
+        printRoomEvents(roomId);
+      }
     }
     awaitingResync = false;
     requestWatch();
@@ -363,6 +396,12 @@ function runWatchCommand(roomId: string) {
     manualShutdown = true;
     awaitingResync = false;
     clearReconnectAttempt();
+    if (!cleanupExecuted) {
+      cleanupExecuted = true;
+      if (options.onShutdown) {
+        options.onShutdown();
+      }
+    }
     if (!socket) {
       return;
     }
@@ -393,7 +432,7 @@ function runWatchCommand(roomId: string) {
   });
 }
 
-function runPostCommand(roomId: string, messageData: string) {
+export function runPostCommand(roomId: string, messageData: string) {
   const socket = new WebSocket(SERVER_URL);
 
   let lastRequestSentAt: number | null = null;
@@ -413,7 +452,11 @@ function runPostCommand(roomId: string, messageData: string) {
       time: messageTime,
       server_received_at: Number.POSITIVE_INFINITY,
     });
-    if (localInsertion.inserted) {
+    if (localInsertion.inserted || localInsertion.replacedExisting) {
+      const stateMachine = getRegisteredStateMachine(roomId);
+      if (stateMachine) {
+        stateMachine.noteTimelineInsertion(localInsertion.index);
+      }
       console.log('Ação aplicada localmente na timeline enquanto aguarda confirmação do servidor.');
       printRoomEvents(roomId);
     }
