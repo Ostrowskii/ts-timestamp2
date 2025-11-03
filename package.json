@@ -3,7 +3,10 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "start": "node --loader ts-node/esm client.ts"
+    "start": "node --import ./register-ts-node.mjs client.ts",
+    "watch": "node --import ./register-ts-node.mjs client.ts watch",
+    "post": "node --import ./register-ts-node.mjs client.ts post",
+    "game": "node --import ./register-ts-node.mjs games/runGame.ts"
   },
   "keywords": [],
   "author": "",
